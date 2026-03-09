@@ -162,13 +162,13 @@ export async function setUpWebPageTranslationQueue() {
   onMessage("enqueueTranslateRequest", async (message) => {
     const { data: { text, langConfig, providerConfig, scheduleAt, hash, articleTitle, articleTextContent } } = message
 
-    // Check cache first
-    if (hash) {
-      const cached = await db.translationCache.get(hash)
-      if (cached) {
-        return cached.translation
-      }
-    }
+    // Dev-only: temporarily disable translation cache while debugging input translation.
+    // if (hash) {
+    //   const cached = await db.translationCache.get(hash)
+    //   if (cached) {
+    //     return cached.translation
+    //   }
+    // }
 
     let result = ""
     const content: ArticleContent = {
@@ -191,14 +191,14 @@ export async function setUpWebPageTranslationQueue() {
       result = await requestQueue.enqueue(thunk, scheduleAt, hash)
     }
 
-    // Cache the translation result if successful
-    if (result && hash) {
-      await db.translationCache.put({
-        key: hash,
-        translation: result,
-        createdAt: new Date(),
-      })
-    }
+    // Dev-only: temporarily disable translation cache writes while debugging input translation.
+    // if (result && hash) {
+    //   await db.translationCache.put({
+    //     key: hash,
+    //     translation: result,
+    //     createdAt: new Date(),
+    //   })
+    // }
 
     return result
   })
@@ -230,12 +230,13 @@ export async function setUpSubtitlesTranslationQueue() {
   onMessage("enqueueSubtitlesTranslateRequest", async (message) => {
     const { data: { text, langConfig, providerConfig, scheduleAt, hash, videoTitle, subtitlesContext } } = message
 
-    if (hash) {
-      const cached = await db.translationCache.get(hash)
-      if (cached) {
-        return cached.translation
-      }
-    }
+    // Dev-only: temporarily disable translation cache while debugging input translation.
+    // if (hash) {
+    //   const cached = await db.translationCache.get(hash)
+    //   if (cached) {
+    //     return cached.translation
+    //   }
+    // }
 
     let result = ""
     const content: ArticleContent = {
@@ -256,13 +257,14 @@ export async function setUpSubtitlesTranslationQueue() {
       result = await requestQueue.enqueue(thunk, scheduleAt, hash)
     }
 
-    if (result && hash) {
-      await db.translationCache.put({
-        key: hash,
-        translation: result,
-        createdAt: new Date(),
-      })
-    }
+    // Dev-only: temporarily disable translation cache writes while debugging input translation.
+    // if (result && hash) {
+    //   await db.translationCache.put({
+    //     key: hash,
+    //     translation: result,
+    //     createdAt: new Date(),
+    //   })
+    // }
 
     return result
   })

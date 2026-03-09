@@ -1,7 +1,10 @@
+import type { ResolvedRichTextEditorAdapter, RichTextTranslationSource } from "./rich-text-adapters/types"
 import { useAtom } from "jotai"
 import { useCallback, useEffect, useRef } from "react"
 import { configFieldsAtomMap } from "@/utils/atoms/config"
 import { translateTextForInput } from "@/utils/host/translate/translate-variants"
+import { requestLexicalMainWorldWrite } from "./rich-text-adapters/lexical/bridge"
+import { resolveRichTextEditorAdapter } from "./rich-text-adapters/resolve-rich-text-editor-adapter"
 
 const SPACE_KEY = " "
 const TRIGGER_COUNT = 3
@@ -23,6 +26,76 @@ function setLastCycleSwapped(swapped: boolean): void {
   }
   catch {
     // sessionStorage may not be available
+  }
+}
+
+function getElementText(element: HTMLInputElement | HTMLTextAreaElement | HTMLElement): string {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    return element.value
+  }
+  if (element.isContentEditable) {
+    return element.textContent || ""
+  }
+  return ""
+}
+
+interface TranslationSource {
+  adapter: ResolvedRichTextEditorAdapter | null
+  richTextSource: RichTextTranslationSource | null
+  text: string
+}
+
+async function getTranslationSource(element: HTMLInputElement | HTMLTextAreaElement | HTMLElement): Promise<TranslationSource | null> {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    return { adapter: null, richTextSource: null, text: element.value }
+  }
+
+  if (!element.isContentEditable) {
+    return null
+  }
+
+  const richTextAdapter = resolveRichTextEditorAdapter(element)
+  if (richTextAdapter) {
+    const richTextSource = await richTextAdapter.getSource()
+    if (!richTextSource) {
+      return null
+    }
+
+    return {
+      adapter: richTextAdapter,
+      richTextSource,
+      text: richTextSource.text,
+    }
+  }
+
+  return { adapter: null, richTextSource: null, text: element.textContent || "" }
+}
+
+async function getComparableText(
+  element: HTMLInputElement | HTMLTextAreaElement | HTMLElement,
+  richTextAdapter: ResolvedRichTextEditorAdapter | null,
+): Promise<string> {
+  if (!richTextAdapter) {
+    return getElementText(element)
+  }
+
+  return await richTextAdapter.getComparableText()
+}
+
+async function applyTranslatedText(
+  element: HTMLInputElement | HTMLTextAreaElement | HTMLElement,
+  translatedText: string,
+  richTextAdapter: ResolvedRichTextEditorAdapter | null,
+  richTextSource: RichTextTranslationSource | null,
+): Promise<void> {
+  if (!richTextAdapter || !richTextSource) {
+    await setTextWithUndo(element, translatedText)
+    return
+  }
+
+  const applied = await richTextAdapter.applyTranslatedText(translatedText, richTextSource)
+  if (!applied) {
+    throw new Error(`Failed to apply translated rich text with ${richTextAdapter.name}`)
   }
 }
 
@@ -103,7 +176,9 @@ function showSpinner(element: HTMLElement): () => void {
  * Set text content with undo support using execCommand.
  * This allows Ctrl+Z to restore the original text.
  */
-function setTextWithUndo(element: HTMLInputElement | HTMLTextAreaElement | HTMLElement, text: string) {
+async function setTextWithUndo(element: HTMLInputElement | HTMLTextAreaElement | HTMLElement, text: string) {
+  const beforeText = getElementText(element)
+
   element.focus()
 
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -125,6 +200,15 @@ function setTextWithUndo(element: HTMLInputElement | HTMLTextAreaElement | HTMLE
 
   // Dispatch input event for framework compatibility (React, Vue, etc.)
   element.dispatchEvent(new Event("input", { bubbles: true }))
+
+  const afterText = getElementText(element)
+
+  if (element instanceof HTMLElement
+    && element.isContentEditable
+    && afterText === beforeText
+    && text !== beforeText) {
+    await requestLexicalMainWorldWrite(element, text)
+  }
 }
 
 export function useInputTranslation() {
@@ -142,25 +226,24 @@ export function useInputTranslation() {
     }
 
     // Get the text content based on element type
-    let text: string
-    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-      text = element.value
-    }
-    else if (element.isContentEditable) {
-      text = element.textContent || ""
-    }
-    else {
+    const source = await getTranslationSource(element)
+    if (!source) {
       return
     }
+
+    let { text } = source
+    const { adapter, richTextSource } = source
 
     // Remove trailing whitespace added by space key presses
     text = text.trim()
 
-    // Set the trimmed text back immediately (with undo support)
-    setTextWithUndo(element, text)
-
     if (!text.trim()) {
       return
+    }
+
+    if (!richTextSource) {
+      // Set the trimmed text back immediately (with undo support)
+      await setTextWithUndo(element, text)
     }
 
     // Determine fromLang and toLang, possibly swapped if cycle is enabled
@@ -189,23 +272,14 @@ export function useInputTranslation() {
     const originalText = text
 
     try {
-      const translatedText = await translateTextForInput(text, fromLang, toLang)
+      const translatedText = await translateTextForInput(richTextSource?.richTextInput ?? text, fromLang, toLang)
 
       // Check if element content changed during translation (user input)
-      let currentText: string
-      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-        currentText = element.value
-      }
-      else if (element.isContentEditable) {
-        currentText = element.textContent || ""
-      }
-      else {
-        currentText = originalText
-      }
+      const comparableCurrentText = await getComparableText(element, adapter)
 
       // Only apply translation if content hasn't changed during async operation
-      if (currentText === originalText && translatedText) {
-        setTextWithUndo(element, translatedText)
+      if (comparableCurrentText === originalText && translatedText) {
+        await applyTranslatedText(element, translatedText, adapter, richTextSource)
       }
     }
     catch (error) {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DEFAULT_CONFIG } from "@/utils/constants/config"
 import { executeTranslate } from "@/utils/host/translate/execute-translate"
-import { translateTextForPage } from "@/utils/host/translate/translate-variants"
+import { translateTextForInput, translateTextForPage } from "@/utils/host/translate/translate-variants"
 import { getTranslatePrompt } from "@/utils/prompts/translate"
 
 // Mock dependencies
@@ -17,6 +17,14 @@ vi.mock("@/utils/host/translate/api/microsoft", () => ({
   microsoftTranslate: vi.fn(),
 }))
 
+vi.mock("@/utils/config/languages", async () => {
+  const actual = await vi.importActual<typeof import("@/utils/config/languages")>("@/utils/config/languages")
+  return {
+    ...actual,
+    getDetectedCodeFromStorage: vi.fn(),
+  }
+})
+
 vi.mock("@/utils/prompts/translate", () => ({
   getTranslatePrompt: vi.fn(),
 }))
@@ -25,6 +33,7 @@ let mockSendMessage: any
 let mockMicrosoftTranslate: any
 let mockGetConfigFromStorage: any
 let mockGetTranslatePrompt: any
+let mockGetDetectedCodeFromStorage: any
 
 describe("translate-text", () => {
   beforeEach(async () => {
@@ -33,9 +42,11 @@ describe("translate-text", () => {
     mockMicrosoftTranslate = vi.mocked((await import("@/utils/host/translate/api/microsoft")).microsoftTranslate)
     mockGetConfigFromStorage = vi.mocked((await import("@/utils/config/storage")).getLocalConfig)
     mockGetTranslatePrompt = vi.mocked((await import("@/utils/prompts/translate")).getTranslatePrompt)
+    mockGetDetectedCodeFromStorage = vi.mocked((await import("@/utils/config/languages")).getDetectedCodeFromStorage)
 
     // Mock getConfigFromStorage to return DEFAULT_CONFIG
     mockGetConfigFromStorage.mockResolvedValue(DEFAULT_CONFIG)
+    mockGetDetectedCodeFromStorage.mockResolvedValue("eng")
 
     // Mock getTranslatePrompt to return a simple prompt
     mockGetTranslatePrompt.mockResolvedValue("Translate to {{targetLang}}: {{input}}")
@@ -55,6 +66,32 @@ describe("translate-text", () => {
         scheduleAt: expect.any(Number),
         hash: expect.any(String),
       }))
+    })
+  })
+
+  describe("translateTextForInput", () => {
+    it("should send message with resolved input translation languages", async () => {
+      mockSendMessage.mockResolvedValue("translated input")
+
+      const result = await translateTextForInput("hello world", "targetCode", "sourceCode")
+
+      expect(result).toBe("translated input")
+      expect(mockSendMessage).toHaveBeenCalledWith("enqueueTranslateRequest", expect.objectContaining({
+        text: "hello world",
+        langConfig: expect.objectContaining({
+          sourceCode: "cmn",
+          targetCode: "eng",
+        }),
+      }))
+    })
+
+    it("should skip and log when resolved languages are the same", async () => {
+      mockGetDetectedCodeFromStorage.mockResolvedValue("cmn")
+
+      const result = await translateTextForInput("你好世界", "targetCode", "sourceCode")
+
+      expect(result).toBe("")
+      expect(mockSendMessage).not.toHaveBeenCalled()
     })
   })
 
